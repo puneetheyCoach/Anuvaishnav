@@ -4,7 +4,7 @@ require('dotenv').config();
 // Import dependencies
 const express = require('express');
 const bodyParser = require('body-parser');
-const { Retell } = require('@retell/sdk');
+const axios = require('axios');
 const plivo = require('plivo');
 const fs = require('fs');
 const path = require('path');
@@ -44,10 +44,33 @@ function safeLog(data, logType = 'general') {
   }
 }
 
-// Initialize Retell client with your API key
-const retellClient = new Retell({
-  apiKey: process.env.RETELL_API_KEY,
-});
+// Function to register an outbound call with Retell
+async function registerOutboundCall(fromNumber, toNumber) {
+  try {
+    const response = await axios.post(
+      'https://api.retellai.com/v1/call/register-phone-call',
+      {
+        agent_id: process.env.RETELL_AGENT_ID,
+        from_number: fromNumber,
+        to_number: toNumber,
+        direction: "outbound",
+        metadata: {
+          source: "plivo_integration"
+        }
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.RETELL_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    return response.data;
+  } catch (error) {
+    console.error('Error registering call with Retell:', error.response?.data || error.message);
+    throw error;
+  }
+}
 
 // Initialize Plivo client with your credentials
 const plivoClient = new plivo.Client(
@@ -254,15 +277,7 @@ app.post('/make-outbound-call', async (req, res) => {
     safeLog(`Initiating call from ${cleanFromNumber} to ${cleanToNumber}`, 'calls');
 
     // Step 1: Register the outbound call with Retell AI
-    const phoneCallResponse = await retellClient.call.registerPhoneCall({
-      agent_id: process.env.RETELL_AGENT_ID,  // Your Retell agent ID
-      from_number: cleanFromNumber,           // Caller ID (your Plivo number)
-      to_number: cleanToNumber,               // Recipient's number
-      direction: "outbound",                  // This is an outbound call
-      metadata: {                             // Optional metadata
-        source: "plivo_integration"
-      }
-    });
+    const phoneCallResponse = await registerOutboundCall(cleanFromNumber, cleanToNumber);
 
     safeLog('Retell call registered: ' + JSON.stringify(phoneCallResponse), 'calls');
 
@@ -441,3 +456,4 @@ app.listen(PORT, () => {
   safeLog(`Health check: http://localhost:${PORT}/health`, 'server');
   safeLog(`Web interface: http://localhost:${PORT}/`, 'server');
 });
+
