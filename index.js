@@ -44,11 +44,12 @@ function safeLog(data, logType = 'general') {
   }
 }
 
-// Function to register an outbound call with Retell
+/ Function to register an outbound call with Retell
 async function registerOutboundCall(fromNumber, toNumber) {
   try {
+    // Using the correct Retell API URL
     const response = await axios.post(
-      'https://api.retellai.ai/v1/call/register-phone-call',
+      'https://api.retell.ai/v1/call/register-phone-call',
       {
         agent_id: process.env.RETELL_AGENT_ID,
         from_number: fromNumber,
@@ -60,15 +61,36 @@ async function registerOutboundCall(fromNumber, toNumber) {
       },
       {
         headers: {
-          'Authorization': `Bearer ${process.env.RETELL_API_KEY}`,
+          'Authorization': Bearer ${process.env.RETELL_API_KEY},
           'Content-Type': 'application/json'
-        }
+        },
+        // Add timeout to prevent hanging requests
+        timeout: 10000
       }
     );
+
+    if (!response.data  !response.data.call_id) {
+      throw new Error('Retell API returned an invalid response without call_id');
+    }
+
     return response.data;
   } catch (error) {
-    console.error('Error registering call with Retell:', error.response?.data || error.message);
-    throw error;
+    // Detailed error logging
+    if (error.response) {
+      // The request was made and the server responded with a status code
+      // that falls out of the range of 2xx
+      safeLog(Retell API error response: ${JSON.stringify(error.response.data)}, 'errors');
+      safeLog(Retell API error status: ${error.response.status}, 'errors');
+      throw new Error(`Retell API Error: ${error.response.data?.message  JSON.stringify(error.response.data) || error.message});
+    } else if (error.request) {
+      // The request was made but no response was received
+      safeLog(Retell API no response: ${error.request}, 'errors');
+      throw new Error(Retell API Connection Error: No response received. Please check your network and API endpoint.);
+    } else {
+      // Something happened in setting up the request that triggered an Error
+      safeLog(Retell API request setup error: ${error.message}`, 'errors');
+      throw error;
+    }
   }
 }
 
@@ -257,96 +279,110 @@ app.get('/', (req, res) => {
   `);
 });
 
-// Endpoint to initiate an outbound call
+/ Endpoint to initiate an outbound call
 app.post('/make-outbound-call', async (req, res) => {
   try {
     const { to_number, from_number } = req.body;
-    
+
     // Validate phone numbers
-    if (!to_number || !from_number) {
+    if (!to_number  !from_number) {
       return res.status(400).json({
         success: false,
         error: 'Both to_number and from_number are required'
       });
     }
-    
-    // Remove any spaces in phone numbers
+
+    // Validate phone number format
+    const phoneRegex = /^+[1-9]\d{1,14}$/;
     const cleanToNumber = to_number.replace(/\s/g, '');
     const cleanFromNumber = from_number.replace(/\s/g, '');
-    
-    safeLog(`Initiating call from ${cleanFromNumber} to ${cleanToNumber}`, 'calls');
+
+    if (!phoneRegex.test(cleanToNumber)  !phoneRegex.test(cleanFromNumber)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Phone numbers must be in E.164 format (e.g., +1XXXXXXXXXX)'
+      });
+    }
+
+    safeLog(Initiating call from ${cleanFromNumber} to ${cleanToNumber}, 'calls');
 
     // Step 1: Register the outbound call with Retell AI
-    const phoneCallResponse = await registerOutboundCall(cleanFromNumber, cleanToNumber);
-
-    safeLog('Retell call registered: ' + JSON.stringify(phoneCallResponse), 'calls');
+    let phoneCallResponse;
+    try {
+      phoneCallResponse = await registerOutboundCall(cleanFromNumber, cleanToNumber);
+      safeLog('Retell call registered: ' + JSON.stringify(phoneCallResponse), 'calls');
+    } catch (retellError) {
+      safeLog(Error registering call with Retell: ${retellError.message}, 'errors');
+      return res.status(500).json({ 
+        success: false, 
+        error: retellError.message,
+        step: 'retell_registration'
+      });
+    }
 
     // Step 2: Set up the webhook URLs for Plivo
-    const serverUrl = process.env.SERVER_URL || `https://${req.headers.host}`;
-    const answerUrl = `${serverUrl}/answer?call_id=${phoneCallResponse.call_id}`;
-    const hangupUrl = `${serverUrl}/hangup`;
-    
-    safeLog(`Using server URL: ${serverUrl}`, 'calls');
-    safeLog(`Using answer URL: ${answerUrl}`, 'calls');
-    
-    // Step 3: Create the outbound call using Plivo
-    const response = await plivoClient.calls.create(
-      cleanFromNumber,         // Caller ID (your Plivo number)
-      cleanToNumber,           // Recipient's number
-      answerUrl,               // URL that Plivo will call when the call is answered
-      {
-        answerMethod: 'POST',                 // HTTP method for answer_url
-        hangupUrl: hangupUrl,                 // URL to notify when call ends
-        hangupMethod: 'POST',                 // HTTP method for hangup_url
-        ringTimeout: 30                       // Ring timeout in seconds
-      }
-    );
+    const serverUrl = process.env.SERVER_URL || https://${req.headers.host};
+    const answerUrl = ${serverUrl}/answer?call_id=${phoneCallResponse.call_id};
+    const hangupUrl = ${serverUrl}/hangup;
 
-    safeLog('Plivo call initiated: ' + JSON.stringify(response), 'calls');
+    safeLog(Using server URL: ${serverUrl}, 'calls');
+    safeLog(Using answer URL: ${answerUrl}, 'calls');
+// Step 3: Create the outbound call using Plivo
+    let plivoResponse;
+    try {
+      plivoResponse = await plivoClient.calls.create(
+        cleanFromNumber,         // Caller ID (your Plivo number)
+        cleanToNumber,           // Recipient's number
+        answerUrl,               // URL that Plivo will call when the call is answered
+        {
+          answerMethod: 'POST',                 // HTTP method for answer_url
+          hangupUrl: hangupUrl,                 // URL to notify when call ends
+          hangupMethod: 'POST',                 // HTTP method for hangup_url
+          ringTimeout: 30                       // Ring timeout in seconds
+        }
+      );
+      safeLog('Plivo call initiated: ' + JSON.stringify(plivoResponse), 'calls');
+    } catch (plivoError) {
+      safeLog(Error initiating Plivo call: ${plivoError.message}, 'errors');
+      return res.status(500).json({ 
+        success: false, 
+        error: Plivo Error: ${plivoError.message},
+        step: 'plivo_call_creation'
+      });
+    }
 
     // Log the call details
     const callLog = {
       timestamp: new Date().toISOString(),
-      plivo_call_uuid: response.requestUuid,
+      plivo_call_uuid: plivoResponse.requestUuid,
       retell_call_id: phoneCallResponse.call_id,
       from: cleanFromNumber,
       to: cleanToNumber
     };
-    
+
     safeLog(callLog, 'calls');
 
     // Return successful response with call details
     res.json({ 
       success: true, 
-      call_uuid: response.requestUuid,
+      call_uuid: plivoResponse.requestUuid,
       retell_call_id: phoneCallResponse.call_id 
     });
 
   } catch (error) {
-    safeLog(`Error initiating call: ${error.message}`, 'errors');
+    safeLog(Unexpected error initiating call: ${error.message}, 'errors');
     if (error.stack) {
       safeLog(error.stack, 'errors');
     }
-    
-    // Handle different types of errors
-    let errorMessage = error.message;
-    
-    // Retell API specific errors
-    if (error.response && error.response.data) {
-      errorMessage = `Retell API Error: ${error.response.data.message || error.message}`;
-    }
-    
-    // Plivo API specific errors
-    if (error.apiId && error.error) {
-      errorMessage = `Plivo API Error: ${error.error}`;
-    }
-    
+
     res.status(500).json({ 
       success: false, 
-      error: errorMessage
+      error: Unexpected error: ${error.message},
+      step: 'general'
     });
   }
 });
+﻿
 
 // Answer webhook - called when the call is answered
 app.post('/answer', (req, res) => {
