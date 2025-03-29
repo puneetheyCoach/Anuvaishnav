@@ -48,7 +48,7 @@ function safeLog(data, logType = 'general') {
 async function registerOutboundCall(fromNumber, toNumber) {
   try {
     const response = await axios.post(
-      'https://api.retellai.com/v1/call/register-phone-call',
+      'https://api.retellai.ai/v1/call/register-phone-call',
       {
         agent_id: process.env.RETELL_AGENT_ID,
         from_number: fromNumber,
